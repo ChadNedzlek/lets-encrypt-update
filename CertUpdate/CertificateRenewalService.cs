@@ -31,20 +31,30 @@ namespace CertUpdate
 
 		protected override void OnStart(string[] args)
 		{
+			Trace.AutoFlush = true;
+			Trace.TraceInformation("Starting service...");
 			_cancellation = new CancellationTokenSource();
 			_executingTask = Task.Run(() => TrackRenewals(_cancellation.Token), _cancellation.Token);
 		}
 
 		protected override void OnStop()
 		{
+			Trace.TraceInformation("Stopping service...");
 			_cancellation.Cancel();
 			try
 			{
-				_executingTask?.Wait();
+				Trace.TraceInformation("Waiting for task to end service...");
+				RequestAdditionalTime(30000);
+				_executingTask?.GetAwaiter().GetResult();
 			}
-			catch (OperationCanceledException)
+			catch (TaskCanceledException)
 			{
 			}
+			catch (Exception e)
+			{
+				Trace.TraceError($"Failed to stop service: {e}");
+			}
+			Trace.TraceInformation("Shutdown completed");
 		}
 
 		private async Task TrackRenewals(CancellationToken cancellationToken)
