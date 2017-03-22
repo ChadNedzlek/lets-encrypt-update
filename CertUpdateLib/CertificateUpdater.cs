@@ -78,7 +78,7 @@ namespace CertUpdateLib
 					OnStatusUpdate?.Invoke("Getting directory information...");
 					using (
 						HttpResponseMessage dirResponse = await httpClient.GetAsync(
-							"https://acme-staging.api.letsencrypt.org/directory",
+							"https://acme-v01.api.letsencrypt.org/directory",
 							cancellationToken))
 					{
 						UpdateNonce(dirResponse);
