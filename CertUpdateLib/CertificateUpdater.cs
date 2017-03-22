@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -72,7 +71,8 @@ namespace CertUpdateLib
 					}
 
 					OnStatusUpdate?.Invoke("Generating CSR...");
-					byte[] csr = GenerateCertificateRequest(output.PrivateKeyPath);
+					AsymmetricCipherKeyPair certKey;
+					byte[] csr = GenerateCertificateRequest(output.PrivateKeyPath, out certKey);
 
 					IDictionary<string, string> urls;
 					OnStatusUpdate?.Invoke("Getting directory information...");
@@ -168,86 +168,19 @@ namespace CertUpdateLib
 							return false;
 					}
 
-					SaveCertificates(output, cert, rsaPrivateKey, intermediateCerts);
+					SaveCertificates(output, cert, rsaPrivateKey, intermediateCerts, certKey);
 				}
 			}
 
 			return true;
 		}
 
-		private void SaveCertificates(DomainUpdateConfigurationOutput outputDirectory, X509Certificate2 cert, RsaPrivateCrtKeyParameters rsaPrivateKey, List<X509Certificate2> intermediateCerts)
+		private void SaveCertificates(DomainUpdateConfigurationOutput output, X509Certificate2 cert, RsaPrivateCrtKeyParameters rsaPrivateKey, List<X509Certificate2> intermediateCerts, AsymmetricCipherKeyPair certKey)
 		{
 			X509Certificate bcCert = DotNetUtilities.FromX509Certificate(cert);
 			string alias = $"{Domain} (exp: {cert.NotAfter:d})";
 			
-			{
-				var store = new Pkcs12Store();
-				var certEntry = new X509CertificateEntry(bcCert);
-				store.SetCertificateEntry(alias, certEntry);
-				store.SetKeyEntry(alias, new AsymmetricKeyEntry(rsaPrivateKey), new[] {certEntry});
-				using (MemoryStream stream = new MemoryStream())
-				{
-					store.Save(stream, null, new SecureRandom());
-					stream.Seek(0, SeekOrigin.Begin);
-					cert = new X509Certificate2(
-						stream.ToArray(),
-						(string) null,
-						X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.MachineKeySet);
-				}
-			}
-
-			if (!String.IsNullOrEmpty(outputDirectory.PfxPath))
-			{
-				OnStatusUpdate?.Invoke("Exporting PFX...");
-			}
-
-			if (!String.IsNullOrEmpty(outputDirectory.SingleCertificatePath))
-			{
-				OnStatusUpdate?.Invoke("Exporting CRT...");
-				byte[] pfxBytes = cert.Export(X509ContentType.Cert);
-				using (FileStream pfxStream = File.Create(outputDirectory.SingleCertificatePath))
-				using (var pfxWriter = new BinaryWriter(pfxStream))
-				{
-					pfxWriter.Write(pfxBytes);
-				}
-			}
-
-			if (!String.IsNullOrEmpty(outputDirectory.ChainedCertificatePath))
-			{
-				OnStatusUpdate?.Invoke("Exporting Chained CRT...");
-				using (StreamWriter fileWriter = File.CreateText(outputDirectory.ChainedCertificatePath))
-				{
-					var writer = new PemWriter(fileWriter);
-					writer.WriteObject(bcCert);
-					foreach (X509Certificate2 issuer in intermediateCerts)
-						writer.WriteObject(DotNetUtilities.FromX509Certificate(issuer));
-				}
-			}
-
-			if (!String.IsNullOrEmpty(outputDirectory.IntermediateCertificatesPath))
-			{
-				OnStatusUpdate?.Invoke("Exporting Intermediate CRT...");
-				using (StreamWriter fileWriter = File.CreateText(outputDirectory.IntermediateCertificatesPath))
-				{
-					var writer = new PemWriter(fileWriter);
-					foreach (X509Certificate2 issuer in intermediateCerts)
-						writer.WriteObject(DotNetUtilities.FromX509Certificate(issuer));
-				}
-			}
-
-			if (!String.IsNullOrEmpty(outputDirectory.IntermediatePfxPath))
-			{
-				OnStatusUpdate?.Invoke("Exporting Intermediate PFX...");
-				X509Certificate2Collection coll = new X509Certificate2Collection(intermediateCerts.ToArray());
-				byte[] pfxBytes = coll.Export(X509ContentType.Pfx);
-				using (FileStream pfxStream = File.Create(outputDirectory.IntermediatePfxPath))
-				using (var pfxWriter = new BinaryWriter(pfxStream))
-				{
-					pfxWriter.Write(pfxBytes);
-				}
-			}
-
-			if (outputDirectory.CertStore != null)
+			if (output.CertStore != null)
 			{
 				OnStatusUpdate?.Invoke("Saving to cert store...");
 
@@ -258,8 +191,8 @@ namespace CertUpdateLib
 
 				X509Certificate2 keyedCert;
 				
-				var storeLocation = (StoreLocation)Enum.Parse(typeof(StoreLocation), outputDirectory.CertStore.Location, true);
-				var storeName = (StoreName)Enum.Parse(typeof(StoreName), outputDirectory.CertStore.Name, true);
+				var storeLocation = (StoreLocation)Enum.Parse(typeof(StoreLocation), output.CertStore.Location, true);
+				var storeName = (StoreName)Enum.Parse(typeof(StoreName), output.CertStore.Name, true);
 
 				using (MemoryStream pfxStream = new MemoryStream())
 				{
@@ -285,14 +218,14 @@ namespace CertUpdateLib
 				}
 				intermediates.Close();
 
-				if (outputDirectory.Iis != null)
+				if (output.Iis != null)
 				{
 					OnStatusUpdate?.Invoke("Updating IIS sites...");
 					ServerManager manager = new ServerManager();
-					var site = manager.Sites.FirstOrDefault(s => s.Name == outputDirectory.Iis.Site);
+					var site = manager.Sites.FirstOrDefault(s => s.Name == output.Iis.Site);
 					if (site == null)
 					{
-						OnError?.Invoke($"Unable to find site {outputDirectory.Iis.Site}");
+						OnError?.Invoke($"Unable to find site {output.Iis.Site}");
 						return;
 					}
 
@@ -300,7 +233,7 @@ namespace CertUpdateLib
 					{
 						if (b.Protocol == "https")
 						{
-							if (outputDirectory.Iis.Port == 0 || b.EndPoint.Port == outputDirectory.Iis.Port)
+							if (output.Iis.Port == 0 || b.EndPoint.Port == output.Iis.Port)
 							{
 								OnStatusUpdate?.Invoke($"  Updating port {b.EndPoint.Port}...");
 								b.CertificateHash = keyedCert.GetCertHash();
@@ -316,6 +249,66 @@ namespace CertUpdateLib
 					site.Start();
 				}
 			}
+
+			if (!String.IsNullOrEmpty(output.PfxPath))
+			{
+				OnStatusUpdate?.Invoke("Exporting PFX...");
+				var store = new Pkcs12Store();
+				var certEntry = new X509CertificateEntry(bcCert);
+				store.SetCertificateEntry(alias, certEntry);
+				store.SetKeyEntry(alias, new AsymmetricKeyEntry(rsaPrivateKey), new[] { certEntry });
+				using (var stream = File.Create(output.PfxPath))
+				{
+					store.Save(stream, null, new SecureRandom());
+				}
+			}
+
+			if (!String.IsNullOrEmpty(output.ChainedCertificatePath))
+			{
+				OnStatusUpdate?.Invoke("Exporting Chained CRT...");
+				using (StreamWriter fileWriter = File.CreateText(output.ChainedCertificatePath))
+				{
+					var writer = new PemWriter(fileWriter);
+					writer.WriteObject(bcCert);
+					foreach (X509Certificate2 issuer in intermediateCerts)
+						writer.WriteObject(DotNetUtilities.FromX509Certificate(issuer));
+				}
+			}
+
+			if (!String.IsNullOrEmpty(output.IntermediateCertificatesPath))
+			{
+				OnStatusUpdate?.Invoke("Exporting Intermediate CRT...");
+				using (StreamWriter fileWriter = File.CreateText(output.IntermediateCertificatesPath))
+				{
+					var writer = new PemWriter(fileWriter);
+					foreach (X509Certificate2 issuer in intermediateCerts)
+						writer.WriteObject(DotNetUtilities.FromX509Certificate(issuer));
+				}
+			}
+
+			if (!String.IsNullOrEmpty(output.IntermediatePfxPath))
+			{
+				OnStatusUpdate?.Invoke("Exporting Intermediate PFX...");
+				X509Certificate2Collection coll = new X509Certificate2Collection(intermediateCerts.ToArray());
+				byte[] pfxBytes = coll.Export(X509ContentType.Pfx);
+				using (FileStream pfxStream = File.Create(output.IntermediatePfxPath))
+				using (var pfxWriter = new BinaryWriter(pfxStream))
+				{
+					pfxWriter.Write(pfxBytes);
+				}
+			}
+
+			if (!String.IsNullOrEmpty(output.SingleCertificatePath))
+			{
+				OnStatusUpdate?.Invoke("Exporting CRT...");
+				using (var fileWriter = File.CreateText(output.SingleCertificatePath))
+				{
+					var writer = new PemWriter(fileWriter);
+					fileWriter.Write(bcCert);
+				}
+			}
+
+			WritePem(output.PrivateKeyPath, certKey.Private);
 		}
 
 		private async Task<bool> TryRunAuthorizationsAsync(
@@ -575,7 +568,7 @@ namespace CertUpdateLib
 			return request.ToString();
 		}
 
-		private byte[] GenerateCertificateRequest(string privateKeyPath)
+		private byte[] GenerateCertificateRequest(string privateKeyPath, out AsymmetricCipherKeyPair certKey)
 		{
 			var generator = new RsaKeyPairGenerator();
 			generator.Init(new RsaKeyGenerationParameters(BigInteger.ValueOf(65537), new SecureRandom(), 2048, 1));
@@ -614,7 +607,9 @@ namespace CertUpdateLib
 				attributes,
 				keyPair.Private);
 
-			WritePem(privateKeyPath, keyPair.Private);
+
+
+			certKey = keyPair;
 
 			return req.GetDerEncoded();
 		}
