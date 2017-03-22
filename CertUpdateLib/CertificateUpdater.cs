@@ -168,14 +168,14 @@ namespace CertUpdateLib
 							return false;
 					}
 
-					SaveCertificates(output, cert, rsaPrivateKey, intermediateCerts, certKey);
+					SaveCertificates(output, cert, intermediateCerts, certKey);
 				}
 			}
 
 			return true;
 		}
 
-		private void SaveCertificates(DomainUpdateConfigurationOutput output, X509Certificate2 cert, RsaPrivateCrtKeyParameters rsaPrivateKey, List<X509Certificate2> intermediateCerts, AsymmetricCipherKeyPair certKey)
+		private void SaveCertificates(DomainUpdateConfigurationOutput output, X509Certificate2 cert, List<X509Certificate2> intermediateCerts, AsymmetricCipherKeyPair certKey)
 		{
 			X509Certificate bcCert = DotNetUtilities.FromX509Certificate(cert);
 			string alias = $"{Domain} (exp: {cert.NotAfter:d})";
@@ -183,11 +183,10 @@ namespace CertUpdateLib
 			if (output.CertStore != null)
 			{
 				OnStatusUpdate?.Invoke("Saving to cert store...");
-
 				var pkcs12Store = new Pkcs12Store();
 				var certEntry = new X509CertificateEntry(bcCert);
 				pkcs12Store.SetCertificateEntry(alias, certEntry);
-				pkcs12Store.SetKeyEntry(alias, new AsymmetricKeyEntry(rsaPrivateKey), new[] { certEntry });
+				pkcs12Store.SetKeyEntry(alias, new AsymmetricKeyEntry(certKey.Private), new[] { certEntry });
 
 				X509Certificate2 keyedCert;
 				
@@ -256,7 +255,7 @@ namespace CertUpdateLib
 				var store = new Pkcs12Store();
 				var certEntry = new X509CertificateEntry(bcCert);
 				store.SetCertificateEntry(alias, certEntry);
-				store.SetKeyEntry(alias, new AsymmetricKeyEntry(rsaPrivateKey), new[] { certEntry });
+				store.SetKeyEntry(alias, new AsymmetricKeyEntry(certKey.Private), new[] { certEntry });
 				using (var stream = File.Create(output.PfxPath))
 				{
 					store.Save(stream, null, new SecureRandom());
@@ -304,7 +303,7 @@ namespace CertUpdateLib
 				using (var fileWriter = File.CreateText(output.SingleCertificatePath))
 				{
 					var writer = new PemWriter(fileWriter);
-					fileWriter.Write(bcCert);
+					writer.WriteObject(bcCert);
 				}
 			}
 
